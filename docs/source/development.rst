@@ -25,9 +25,12 @@ libraries. On Debian or Ubuntu, we can install these using
 
     $ sudo apt-get install python-dev zlib1g-dev git libxslt1-dev
 
-Alternatively, on Mac computers, install Anaconda Python <http://continuum.io/downloads> by following the installation instructions presented on the Continuum download page.
-Anaconda Python is a Python suite that includes many of the packages required for GA4GH development.
-Once Anaconda Python has finished installing, (it will take 10 minutes or so depending on available bandwidth) install the following tools:
+Alternatively, on Mac computers, install Anaconda Python
+<http://continuum.io/downloads> by following the installation instructions
+presented on the Continuum download page. Anaconda Python is a Python suite
+that includes many of the packages required for GA4GH development. Once
+Anaconda Python has finished installing, (it will take 10 minutes or so
+depending on available bandwidth) install the following tools:
 
 .. code-block:: bash
 
