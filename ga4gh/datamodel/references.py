@@ -6,15 +6,23 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
+import hashlib
+import json
 import os
 import random
-import hashlib
 
 import pysam
 
 import ga4gh.datamodel as datamodel
 import ga4gh.protocol as protocol
 import ga4gh.exceptions as exceptions
+
+
+DEFAULT_REFERENCESET_NAME = "Default"
+"""
+This is the name used for any reference set referred to in a BAM
+file that does not provide the 'AS' tag in the @SQ header.
+"""
 
 
 class AbstractReferenceSet(datamodel.DatamodelObject):
@@ -28,6 +36,7 @@ class AbstractReferenceSet(datamodel.DatamodelObject):
     def __init__(self, localId):
         super(AbstractReferenceSet, self).__init__(None, localId)
         self._referenceIdMap = {}
+        self._referenceNameMap = {}
         self._referenceIds = []
         self._assemblyId = None
         self._description = None
@@ -42,6 +51,7 @@ class AbstractReferenceSet(datamodel.DatamodelObject):
         """
         id_ = reference.getId()
         self._referenceIdMap[id_] = reference
+        self._referenceNameMap[reference.getLocalId()] = reference
         self._referenceIds.append(id_)
 
     def getReferences(self):
@@ -62,6 +72,14 @@ class AbstractReferenceSet(datamodel.DatamodelObject):
         """
         return self._referenceIdMap[self._referenceIds[index]]
 
+    def getReferenceByName(self, name):
+        """
+        Returns the reference with the specified name.
+        """
+        if name not in self._referenceNameMap:
+            raise exceptions.ReferenceNameNotFoundException(name)
+        return self._referenceNameMap[name]
+
     def getReference(self, id_):
         """
         Returns the Reference with the specified ID or raises a
@@ -73,7 +91,7 @@ class AbstractReferenceSet(datamodel.DatamodelObject):
 
     def getMd5Checksum(self):
         """
-        Returns the MD5 checksum for this reference. This checksum is
+        Returns the MD5 checksum for this reference set. This checksum is
         calculated by making a list of `Reference.md5checksum` for all
         `Reference`s in this set. We then sort this list, and take the
         MD5 hash of all the strings concatenated together.
@@ -137,15 +155,15 @@ class AbstractReferenceSet(datamodel.DatamodelObject):
         Returns the GA4GH protocol representation of this ReferenceSet.
         """
         ret = protocol.ReferenceSet()
-        ret.assemblyId = self._assemblyId
-        ret.description = self._description
+        ret.assemblyId = self.getAssemblyId()
+        ret.description = self.getDescription()
         ret.id = self.getId()
-        ret.isDerived = self._isDerived
+        ret.isDerived = self.getIsDerived()
         ret.md5checksum = self.getMd5Checksum()
-        ret.ncbiTaxonId = self._ncbiTaxonId
+        ret.ncbiTaxonId = self.getNcbiTaxonId()
         ret.referenceIds = self._referenceIds
-        ret.sourceAccessions = self._sourceAccessions
-        ret.sourceURI = self._sourceUri
+        ret.sourceAccessions = self.getSourceAccessions()
+        ret.sourceURI = self.getSourceUri()
         return ret
 
 
@@ -162,7 +180,6 @@ class AbstractReference(datamodel.DatamodelObject):
         super(AbstractReference, self).__init__(parentContainer, localId)
         self._length = -1
         self._md5checksum = ""
-        self._name = ""
         self._sourceUri = None
         self._sourceAccessions = []
         self._isDerived = False
@@ -177,9 +194,9 @@ class AbstractReference(datamodel.DatamodelObject):
 
     def getName(self):
         """
-        Returns the name of this reference (e.g., '22').
+        Returns the name of this reference, e.g., '22'.
         """
-        return self._name
+        return self.getLocalId()
 
     def getIsDerived(self):
         """
@@ -291,8 +308,9 @@ class SimulatedReferenceSet(AbstractReferenceSet):
         self._isDerived = bool(random.randint(0, 1))
         self._ncbiTaxonId = random.randint(0, 2**16)
         self._sourceAccessions = []
-        for i in range(random.randint(0, 5)):
-                self._sourceAccessions.append("sim_accession_{}".format(i))
+        for i in range(random.randint(1, 3)):
+                self._sourceAccessions.append("sim_accession_{}".format(
+                    random.randint(1, 2**32)))
         self._sourceUri = "http://example.com/reference.fa"
         for i in range(numReferences):
             referenceSeed = self._randomGenerator.getrandbits(32)
@@ -313,7 +331,6 @@ class SimulatedReference(AbstractReference):
         rng = random.Random()
         rng.seed(randomSeed)
         self._length = length
-        self._name = localId
         bases = [rng.choice('ACGT') for _ in range(self._length)]
         self._bases = ''.join(bases)
         self._md5checksum = hashlib.md5(self._bases).hexdigest()
@@ -323,8 +340,9 @@ class SimulatedReference(AbstractReference):
             self._sourceDivergence = rng.uniform(0, 0.1)
         self._ncbiTaxonId = random.randint(0, 2**16)
         self._sourceAccessions = []
-        for i in range(random.randint(0, 5)):
-                self._sourceAccessions.append("sim_accession_{}".format(i))
+        for i in range(random.randint(1, 3)):
+                self._sourceAccessions.append("sim_accession_{}".format(
+                    random.randint(1, 2**32)))
         self._sourceUri = "http://example.com/reference.fa"
 
     def getBases(self, start, end):
@@ -342,17 +360,34 @@ class HtslibReferenceSet(datamodel.PysamDatamodelMixin, AbstractReferenceSet):
     """
     A referenceSet based on data on a file system
     """
-    def __init__(self, localId, dataDir):
+    def __init__(self, localId, dataDir, backend):
         super(HtslibReferenceSet, self).__init__(localId)
         self._dataDir = dataDir
-        # TODO get metadata from a file within dataDir? How else will we
-        # fill in the fields like ncbiTaxonId etc?
+        self._setMetadata()
         self._scanDataFiles(dataDir, ["*.fa.gz"])
 
+    def _setMetadata(self):
+        metadataFileName = '{}.json'.format(self._dataDir)
+        with open(metadataFileName) as metadataFile:
+            metadata = json.load(metadataFile)
+            try:
+                self._assemblyId = metadata['assemblyId']
+                self._description = metadata['description']
+                self._isDerived = metadata['isDerived']
+                self._ncbiTaxonId = metadata['ncbiTaxonId']
+                self._sourceAccessions = metadata['sourceAccessions']
+                self._sourceUri = metadata['sourceUri']
+            except KeyError as err:
+                raise exceptions.MissingReferenceSetMetadata(
+                    metadataFileName, str(err))
+
     def _addDataFile(self, path):
-        filename = os.path.split(path)[1]
+        dirname, filename = os.path.split(path)
         localId = filename.split(".")[0]
-        reference = HtslibReference(self, localId, path)
+        metadataFileName = os.path.join(dirname, "{}.json".format(localId))
+        with open(metadataFileName) as metadataFile:
+            metadata = json.load(metadataFile)
+        reference = HtslibReference(self, localId, path, metadata)
         self.addReference(reference)
 
 
@@ -360,18 +395,27 @@ class HtslibReference(datamodel.PysamDatamodelMixin, AbstractReference):
     """
     A reference based on data stored in a file on the file system
     """
-    def __init__(self, parentContainer, localId, dataFile):
+    def __init__(self, parentContainer, localId, dataFile, metadata):
         super(HtslibReference, self).__init__(parentContainer, localId)
         self._fastaFilePath = dataFile
-        fastaFile = self.openFile(dataFile)
+        fastaFile = self.getFileHandle(dataFile)
         numReferences = len(fastaFile.references)
         if numReferences != 1:
             raise exceptions.NotExactlyOneReferenceException(
-                self.getId(), numReferences)
-        self._name = fastaFile.references[0]
+                self._fastaFilePath, numReferences)
+        if fastaFile.references[0] != localId:
+            raise exceptions.InconsistentReferenceNameException(
+                self._fastaFilePath)
         self._length = fastaFile.lengths[0]
-        fastaFile.close()
-        self._md5checksum = "TODO"
+        try:
+            self._md5checksum = metadata["md5checksum"]
+            self._sourceUri = metadata["sourceUri"]
+            self._ncbiTaxonId = metadata["ncbiTaxonId"]
+            self._isDerived = metadata["isDerived"]
+            self._sourceDivergence = metadata["sourceDivergence"]
+            self._sourceAccessions = metadata["sourceAccessions"]
+        except KeyError as err:
+            raise exceptions.MissingReferenceMetadata(dataFile, str(err))
 
     def getFastaFilePath(self):
         """
@@ -386,5 +430,5 @@ class HtslibReference(datamodel.PysamDatamodelMixin, AbstractReference):
         self.checkQueryRange(start, end)
         fastaFile = self.getFileHandle(self._fastaFilePath)
         # TODO we should have some error checking here...
-        bases = fastaFile.fetch(self._name, start, end)
+        bases = fastaFile.fetch(self.getLocalId(), start, end)
         return bases

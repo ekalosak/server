@@ -16,6 +16,9 @@ import ga4gh.protocol as protocol
 
 
 class FaultyVariantDataTest(unittest.TestCase):
+    """
+    Superclass of faulty variant data tests.
+    """
     def setUp(self):
         self.testDataDir = "tests/faultydata/variants"
         self.dataset = datasets.AbstractDataset('dataset1')
@@ -25,55 +28,56 @@ class FaultyVariantDataTest(unittest.TestCase):
 
 
 class TestVariantSetNoIndexedVcf(FaultyVariantDataTest):
-    setIds = ["no_indexed_vcf"]
+    localIds = ["no_indexed_vcf"]
 
     def testInstantiation(self):
-        for localId in self.setIds:
+        for localId in self.localIds:
             path = self.getFullPath(localId)
             self.assertRaises(
                 exceptions.NotIndexedException,
-                variants.HtslibVariantSet, self.dataset, localId, path)
+                variants.HtslibVariantSet, self.dataset, localId, path,
+                None)
 
 
 class TestInconsistentMetaData(FaultyVariantDataTest):
-    setIds = ["inconsist_meta"]
+    localIds = ["inconsist_meta"]
 
     def testInstantiation(self):
-        for localId in self.setIds:
+        for localId in self.localIds:
             path = self.getFullPath(localId)
             with self.assertRaises(exceptions.InconsistentMetaDataException):
-                variants.HtslibVariantSet(self.dataset, localId, path)
+                variants.HtslibVariantSet(self.dataset, localId, path, None)
 
 
 class TestInconsistentCallSetId(FaultyVariantDataTest):
-    setIds = ["inconsist_sampleid", "inconsist_sampleid2"]
+    localIds = ["inconsist_sampleid", "inconsist_sampleid2"]
 
     def testInstantiation(self):
-        for localId in self.setIds:
+        for localId in self.localIds:
             path = self.getFullPath(localId)
             with self.assertRaises(exceptions.InconsistentCallSetIdException):
-                variants.HtslibVariantSet(self.dataset, localId, path)
+                variants.HtslibVariantSet(self.dataset, localId, path, None)
 
 
 class TestOverlappingVcfVariants(FaultyVariantDataTest):
-    setIds = ["overlapping_vcf"]
+    localIds = ["overlapping_vcf"]
 
     def testInstantiation(self):
-        for localId in self.setIds:
+        for localId in self.localIds:
             path = self.getFullPath(localId)
             with self.assertRaises(exceptions.OverlappingVcfException):
-                variants.HtslibVariantSet(self.dataset, localId, path)
+                variants.HtslibVariantSet(self.dataset, localId, path, None)
 
 
 class TestEmptyDirException(FaultyVariantDataTest):
-    setIds = ["empty_dir"]
+    localIds = ["empty_dir"]
 
     def testInstantiation(self):
-        for localId in self.setIds:
+        for localId in self.localIds:
             path = self.getFullPath(localId)
             self.assertRaises(
                 exceptions.EmptyDirException,
-                variants.HtslibVariantSet, self.dataset, localId, path)
+                variants.HtslibVariantSet, self.dataset, localId, path, None)
 
 
 class TestDuplicateCallSetId(FaultyVariantDataTest):
@@ -89,30 +93,94 @@ class TestDuplicateCallSetId(FaultyVariantDataTest):
 
     UNABLE TO CAPTURE EXCEPTION
     """
-    setIds = ["duplicated_sampleid"]
+    localIds = ["duplicated_sampleid"]
 
     @unittest.skipIf(protocol.version.startswith("0.6"), "")
     def testInstantiation(self):
-        for localId in self.setIds:
+        for localId in self.localIds:
             path = self.getFullPath(localId)
             self.assertRaises(
                 exceptions.DuplicateCallSetIdException,
-                variants.HtslibVariantSet, self.dataset, localId, path)
+                variants.HtslibVariantSet, self.dataset, localId, path,
+                None)
 
 
 class FaultyReferenceDataTest(unittest.TestCase):
-    def setUp(self):
-        self.testDataDir = "tests/faultydata/references"
+    """
+    Superclass of faulty reference data tests
+    """
 
-    def getFullPath(self, referenceSetId):
-        return os.path.join(self.testDataDir, referenceSetId)
+    def getFullPath(self, localId):
+        testDataDir = "tests/faultydata/references"
+        return os.path.join(testDataDir, localId)
 
 
 class TestTwoReferences(FaultyReferenceDataTest):
-    setIds = ["two_references"]
+    """
+    Tests for FASTA files with more than one reference.
+    """
 
     def testInstantiation(self):
-        for referenceSetId in self.setIds:
-            path = self.getFullPath(referenceSetId)
-            with self.assertRaises(exceptions.NotExactlyOneReferenceException):
-                references.HtslibReferenceSet(referenceSetId, path)
+        localId = "two_references"
+        path = self.getFullPath(localId)
+        self.assertRaises(
+            exceptions.NotExactlyOneReferenceException,
+            references.HtslibReferenceSet, localId, path, None)
+
+
+class TestInconsistentReferenceName(FaultyReferenceDataTest):
+    """
+    Tests the case in which we have a reference file with a different
+    name to the ID in the fasta file.
+    """
+
+    def testInstantiation(self):
+        localId = "inconsistent_reference_name"
+        path = self.getFullPath(localId)
+        self.assertRaises(
+            exceptions.InconsistentReferenceNameException,
+            references.HtslibReferenceSet, localId, path, None)
+
+
+class FaultyReferenceSetDataTest(unittest.TestCase):
+    """
+    Superclass of faulty reference set data tests
+    """
+    def getFullPath(self, localId):
+        testDataDir = "tests/faultydata/references"
+        return os.path.join(testDataDir, localId)
+
+
+class TestNoReferenceSetMetadata(FaultyReferenceSetDataTest):
+    """
+    Tests an error is thrown with a missing reference set metadata file
+    """
+    def testNoReferenceSetMetadata(self):
+        localId = "no_refset_meta"
+        path = self.getFullPath(localId)
+        with self.assertRaises(IOError):
+            references.HtslibReferenceSet(localId, path, None)
+
+
+class TestMissingReferenceSetMetadata(FaultyReferenceSetDataTest):
+    """
+    Tests an error is thrown with a reference set metadata file that
+    is missing entries
+    """
+    def testMissingReferenceSetMetadata(self):
+        localId = "missing_refset_meta"
+        path = self.getFullPath(localId)
+        with self.assertRaises(exceptions.MissingReferenceSetMetadata):
+            references.HtslibReferenceSet(localId, path, None)
+
+
+class TestInvalidReferenceSetMetadata(FaultyReferenceSetDataTest):
+    """
+    Tests an error is thrown with a reference set metadata file that
+    can not be parsed
+    """
+    def testMissingReferenceSetMetadata(self):
+        localId = "invalid_refset_meta"
+        path = self.getFullPath(localId)
+        with self.assertRaises(ValueError):
+            references.HtslibReferenceSet(localId, path, None)

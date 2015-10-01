@@ -6,8 +6,8 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
-import os
 import json
+import os
 
 import ga4gh.datamodel as datamodel
 import ga4gh.datamodel.datasets as datasets
@@ -154,10 +154,13 @@ class ReadsIntervalIterator(IntervalIterator):
     """
     An interval iterator for reads
     """
+    def __init__(self, request, parentContainer, reference):
+        self._reference = reference
+        super(ReadsIntervalIterator, self).__init__(request, parentContainer)
 
     def _search(self, start, end):
         return self._parentContainer.getReadAlignments(
-            self._request.referenceId, start, end)
+            self._reference, start, end)
 
     @classmethod
     def _getStart(cls, readAlignment):
@@ -202,6 +205,7 @@ class AbstractBackend(object):
         self._datasetIdMap = {}
         self._datasetIds = []
         self._referenceSetIdMap = {}
+        self._referenceSetNameMap = {}
         self._referenceSetIds = []
 
     def addDataset(self, dataset):
@@ -218,6 +222,7 @@ class AbstractBackend(object):
         """
         id_ = referenceSet.getId()
         self._referenceSetIdMap[id_] = referenceSet
+        self._referenceSetNameMap[referenceSet.getLocalId()] = referenceSet
         self._referenceSetIds.append(id_)
 
     def setRequestValidation(self, requestValidation):
@@ -299,6 +304,14 @@ class AbstractBackend(object):
         """
         return self._referenceSetIdMap[self._referenceSetIds[index]]
 
+    def getReferenceSetByName(self, name):
+        """
+        Returns the reference set with the specified name.
+        """
+        if name not in self._referenceSetNameMap:
+            raise exceptions.ReferenceSetNameNotFoundException(name)
+        return self._referenceSetNameMap[name]
+
     def startProfile(self):
         """
         Profiling hook. Called at the start of the runSearchRequest method
@@ -361,12 +374,26 @@ class AbstractBackend(object):
                 nextPageToken = str(currentIndex)
             yield object_.toProtocolElement(), nextPageToken
 
+    def _objectListGenerator(self, request, objectList):
+        """
+        Returns a generator over the objects in the specified list using
+        _topLevelObjectGenerator to generate page tokens.
+        """
+        return self._topLevelObjectGenerator(
+            request, len(objectList), lambda index: objectList[index])
+
     def _singleObjectGenerator(self, datamodelObject):
         """
         Returns a generator suitable for a search method in which the
         result set is a single object.
         """
         yield (datamodelObject.toProtocolElement(), None)
+
+    def _noObjectGenerator(self):
+        """
+        Returns a generator yielding no results
+        """
+        return iter([])
 
     def datasetsGenerator(self, request):
         """
@@ -387,7 +414,10 @@ class AbstractBackend(object):
                 request, dataset.getNumReadGroupSets(),
                 dataset.getReadGroupSetByIndex)
         else:
-            readGroupSet = dataset.getReadGroupSetByName(request.name)
+            try:
+                readGroupSet = dataset.getReadGroupSetByName(request.name)
+            except exceptions.ReadGroupSetNameNotFoundException:
+                return self._noObjectGenerator()
             return self._singleObjectGenerator(readGroupSet)
 
     def referenceSetsGenerator(self, request):
@@ -395,8 +425,21 @@ class AbstractBackend(object):
         Returns a generator over the (referenceSet, nextPageToken) pairs
         defined by the specified request.
         """
-        return self._topLevelObjectGenerator(
-            request, self.getNumReferenceSets(), self.getReferenceSetByIndex)
+        results = []
+        for obj in self.getReferenceSets():
+            include = True
+            if request.md5checksum is not None:
+                if request.md5checksum != obj.getMd5Checksum():
+                    include = False
+            if request.accession is not None:
+                if request.accession not in obj.getSourceAccessions():
+                    include = False
+            if request.assemblyId is not None:
+                if request.assemblyId != obj.getAssemblyId():
+                    include = False
+            if include:
+                results.append(obj)
+        return self._objectListGenerator(request, results)
 
     def referencesGenerator(self, request):
         """
@@ -404,9 +447,18 @@ class AbstractBackend(object):
         defined by the specified request.
         """
         referenceSet = self.getReferenceSet(request.referenceSetId)
-        return self._topLevelObjectGenerator(
-            request, referenceSet.getNumReferences(),
-            referenceSet.getReferenceByIndex)
+        results = []
+        for obj in referenceSet.getReferences():
+            include = True
+            if request.md5checksum is not None:
+                if request.md5checksum != obj.getMd5Checksum():
+                    include = False
+            if request.accession is not None:
+                if request.accession not in obj.getSourceAccessions():
+                    include = False
+            if include:
+                results.append(obj)
+        return self._objectListGenerator(request, results)
 
     def variantSetsGenerator(self, request):
         """
@@ -433,7 +485,10 @@ class AbstractBackend(object):
         dataset = self.getDataset(compoundId.datasetId)
         readGroupSet = dataset.getReadGroupSet(compoundId.readGroupSetId)
         readGroup = readGroupSet.getReadGroup(compoundId.readGroupId)
-        intervalIterator = ReadsIntervalIterator(request, readGroup)
+        # Find the reference.
+        referenceSet = readGroupSet.getReferenceSet()
+        reference = referenceSet.getReference(request.referenceId)
+        intervalIterator = ReadsIntervalIterator(request, readGroup, reference)
         return intervalIterator
 
     def variantsGenerator(self, request):
@@ -460,9 +515,10 @@ class AbstractBackend(object):
                 request, variantSet.getNumCallSets(),
                 variantSet.getCallSetByIndex)
         else:
-            # Since names are unique within a callSet, we either have one
-            # result or we 404.
-            callSet = variantSet.getCallSetByName(request.name)
+            try:
+                callSet = variantSet.getCallSetByName(request.name)
+            except exceptions.CallSetNameNotFoundException:
+                return self._noObjectGenerator()
             return self._singleObjectGenerator(callSet)
 
     ###########################################################
@@ -716,17 +772,6 @@ class SimulatedBackend(AbstractBackend):
             numAlignments=2):
         super(SimulatedBackend, self).__init__()
 
-        # Datasets
-        for i in range(numDatasets):
-            seed = randomSeed + i
-            localId = "simulatedDataset{}".format(i)
-            dataset = datasets.SimulatedDataset(
-                localId, randomSeed=seed, numCalls=numCalls,
-                variantDensity=variantDensity, numVariantSets=numVariantSets,
-                numReadGroupSets=numReadGroupSets,
-                numReadGroupsPerReadGroupSet=numReadGroupsPerReadGroupSet,
-                numAlignments=numAlignments)
-            self.addDataset(dataset)
         # References
         for i in range(numReferenceSets):
             localId = "referenceSet{}".format(i)
@@ -734,6 +779,20 @@ class SimulatedBackend(AbstractBackend):
             referenceSet = references.SimulatedReferenceSet(
                 localId, seed, numReferencesPerReferenceSet)
             self.addReferenceSet(referenceSet)
+
+        # Datasets
+        for i in range(numDatasets):
+            seed = randomSeed + i
+            localId = "simulatedDataset{}".format(i)
+            referenceSet = self.getReferenceSetByIndex(i % numReferenceSets)
+            dataset = datasets.SimulatedDataset(
+                localId, referenceSet=referenceSet, randomSeed=seed,
+                numCalls=numCalls, variantDensity=variantDensity,
+                numVariantSets=numVariantSets,
+                numReadGroupSets=numReadGroupSets,
+                numReadGroupsPerReadGroupSet=numReadGroupsPerReadGroupSet,
+                numAlignments=numAlignments)
+            self.addDataset(dataset)
 
 
 class FileSystemBackend(AbstractBackend):
@@ -753,7 +812,7 @@ class FileSystemBackend(AbstractBackend):
             relativePath = os.path.join(referenceSetDir, referenceSetName)
             if os.path.isdir(relativePath):
                 referenceSet = references.HtslibReferenceSet(
-                    referenceSetName, relativePath)
+                    referenceSetName, relativePath, self)
                 self.addReferenceSet(referenceSet)
         # Datasets
         datasetDirs = [
@@ -762,5 +821,5 @@ class FileSystemBackend(AbstractBackend):
             if os.path.isdir(os.path.join(self._dataDir, directory)) and
             directory != referencesDirName]
         for datasetDir in datasetDirs:
-            dataset = datasets.FileSystemDataset(datasetDir)
+            dataset = datasets.FileSystemDataset(datasetDir, self)
             self.addDataset(dataset)

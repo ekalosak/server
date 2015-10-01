@@ -91,28 +91,8 @@ class TestPysamSanitizer(datamodel.PysamDatamodelMixin, unittest.TestCase):
         self.assertEqual(stop, self.vcfMax)
 
     def testSanitizeAlignmentFileFetch(self):
-        referenceNameArg = 'x' * (self.maxStringLength + 1)
         startArg = self.samMin - 1
         endArg = self.samMaxEnd + 1
-        referenceName, start, end = self.sanitizeAlignmentFileFetch(
-            referenceNameArg, startArg, endArg)
-        self.assertEqual(
-            referenceNameArg[:self.maxStringLength], referenceName)
+        start, end = self.sanitizeAlignmentFileFetch(startArg, endArg)
         self.assertEqual(start, self.samMin)
         self.assertEqual(end, self.samMaxEnd)
-
-    def testSanitizeGetRName(self):
-        # too high
-        referenceId = self.rNameMax + 1
-        with self.assertRaises(exceptions.DatamodelValidationException):
-            self.sanitizeGetRName(referenceId)
-
-        # too low
-        referenceId = self.rNameMin - 1
-        with self.assertRaises(exceptions.DatamodelValidationException):
-            self.sanitizeGetRName(referenceId)
-
-        # not an int
-        referenceId = '1'
-        with self.assertRaises(exceptions.DatamodelValidationException):
-            self.sanitizeGetRName(referenceId)

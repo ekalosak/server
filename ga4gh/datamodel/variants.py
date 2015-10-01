@@ -158,6 +158,7 @@ class AbstractVariantSet(datamodel.DatamodelObject):
         protocolElement.datasetId = self.getParentContainer().getId()
         protocolElement.referenceSetId = self._referenceSetId
         protocolElement.metadata = self.getMetadata()
+        protocolElement.name = self.getLocalId()
         return protocolElement
 
     def getNumVariants(self):
@@ -245,10 +246,11 @@ class SimulatedVariantSet(AbstractVariantSet):
     def getVariants(self, referenceName, startPosition, endPosition,
                     callSetIds=None):
         randomNumberGenerator = random.Random()
+        randomNumberGenerator.seed(self._randomSeed)
         i = startPosition
         while i < endPosition:
-            randomNumberGenerator.seed(self._randomSeed + i)
             if randomNumberGenerator.random() < self._variantDensity:
+                randomNumberGenerator.seed(self._randomSeed + i)
                 yield self.generateVariant(
                     referenceName, i, randomNumberGenerator)
             i += 1
@@ -309,7 +311,7 @@ class HtslibVariantSet(datamodel.PysamDatamodelMixin, AbstractVariantSet):
     Class representing a single variant set backed by a directory of indexed
     VCF or BCF files.
     """
-    def __init__(self, parentContainer, localId, dataDir):
+    def __init__(self, parentContainer, localId, dataDir, backend):
         super(HtslibVariantSet, self).__init__(parentContainer, localId)
         self._dataDir = dataDir
         self._setAccessTimes(dataDir)
@@ -457,7 +459,7 @@ class HtslibVariantSet(datamodel.PysamDatamodelMixin, AbstractVariantSet):
         cursor = self.getFileHandle(varFileName).fetch(
             referenceName, startPosition, endPosition)
         for record in cursor:
-            variant = self.convertVariant(record, [])
+            variant = self.convertVariant(record, self._callSetIds)
             if (record.start == start and
                     compoundId.md5 == self.hashVariant(variant)):
                 return variant

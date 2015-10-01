@@ -5,9 +5,10 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
-import os
 import glob
 import hashlib
+import json
+import os
 
 # TODO it may be a bit circular to use pysam as our interface for
 # accessing reference information, since this is the method we use
@@ -27,38 +28,53 @@ def testReferenceSets():
         yield test
 
 
+class ReferenceSetInfo(object):
+    """
+    Container class for information about a reference set
+    """
+    def __init__(self, dataDir):
+        metadataFilePath = '{}.json'.format(dataDir)
+        with open(metadataFilePath) as metadataFile:
+            self.metadata = json.load(metadataFile)
+
+
+class ReferenceInfo(object):
+    """
+    Container class for information about a reference
+    """
+    def __init__(self, referenceName, dataDir):
+        fastaFileName = os.path.join(
+            dataDir, "{}.fa.gz".format(referenceName))
+        self.fastaFile = pysam.FastaFile(fastaFileName)
+        assert len(self.fastaFile.references) == 1
+        assert self.fastaFile.references[0] == referenceName
+        self.bases = self.fastaFile.fetch(self.fastaFile.references[0])
+        self.length = len(self.bases)
+        metadataFileName = os.path.join(
+            dataDir, "{}.json".format(referenceName))
+        with open(metadataFileName) as metadataFile:
+            self.metadata = json.load(metadataFile)
+
+
 class ReferenceSetTest(datadriven.DataDrivenTest):
     """
     Data drive test class for reference sets. Builds an alternative model of
     a reference set, and verifies that it is consistent with the model
     built by the references.ReferenceSet object.
     """
-    class ReferenceInfo(object):
-        """
-        Container class for information about a reference
-        """
-        def __init__(self, referenceSetId, fastaFileName):
-            self.fastaFile = pysam.FastaFile(fastaFileName)
-            self.bases = self.fastaFile.fetch(self.fastaFile.references[0])
-            self.length = len(self.bases)
-
     def __init__(self, referenceSetId, baseDir):
-        super(ReferenceSetTest, self).__init__(None, referenceSetId, baseDir)
+        super(ReferenceSetTest, self).__init__(referenceSetId, baseDir)
+        self._referenceSetInfo = ReferenceSetInfo(baseDir)
         self._referenceInfos = {}
-        for fastaFileName in glob.glob(
-                os.path.join(self._dataDir, "*.fa.gz")):
-            self._readFasta(referenceSetId, fastaFileName)
+        for fastaFilePath in glob.glob(
+                os.path.join(self._dataPath, "*.fa.gz")):
+            fastaFileName = os.path.split(fastaFilePath)[1]
+            referenceName = fastaFileName.split(".")[0]
+            referenceInfo = ReferenceInfo(referenceName, self._dataPath)
+            self._referenceInfos[referenceName] = referenceInfo
 
-    def _readFasta(self, referenceSetId, fastaFileName):
-        referenceInfo = self.ReferenceInfo(referenceSetId, fastaFileName)
-        self._referenceInfos[fastaFileName] = referenceInfo
-
-    def getDataModelClass(self):
-        class HtslibReferenceSetWrapper(references.HtslibReferenceSet):
-            def __init__(self, parentContainer, localId, dataDir):
-                super(HtslibReferenceSetWrapper, self).__init__(
-                    localId, dataDir)
-        return HtslibReferenceSetWrapper
+    def getDataModelInstance(self, localId, dataPath):
+        return references.HtslibReferenceSet(localId, dataPath, None)
 
     def getProtocolClass(self):
         return protocol.ReferenceSet
@@ -74,12 +90,44 @@ class ReferenceSetTest(datadriven.DataDrivenTest):
             reference = gaReference.toProtocolElement().toJsonDict()
             self.assertValid(protocol.Reference, reference)
 
+    def testMetadata(self):
+        # Check that the metadata loaded from the JSON file is
+        # consistent with returned objects.
+        referenceSet = self._gaObject
+        metadata = self._referenceSetInfo.metadata
+        self.assertEqual(
+            referenceSet.getAssemblyId(), metadata['assemblyId'])
+        self.assertEqual(
+            referenceSet.getDescription(), metadata['description'])
+        self.assertEqual(
+            referenceSet.getIsDerived(), metadata['isDerived'])
+        self.assertEqual(
+            referenceSet.getNcbiTaxonId(), metadata['ncbiTaxonId'])
+        self.assertEqual(
+            referenceSet.getSourceAccessions(), metadata['sourceAccessions'])
+        self.assertEqual(
+            referenceSet.getSourceUri(), metadata['sourceUri'])
+        for reference in referenceSet.getReferences():
+            referenceInfo = self._referenceInfos[reference.getLocalId()]
+            metadata = referenceInfo.metadata
+            self.assertEqual(
+                reference.getNcbiTaxonId(), metadata["ncbiTaxonId"])
+            self.assertEqual(
+                reference.getMd5Checksum(), metadata["md5checksum"])
+            self.assertEqual(
+                reference.getSourceUri(), metadata["sourceUri"])
+            self.assertEqual(
+                reference.getIsDerived(), metadata["isDerived"])
+            self.assertEqual(
+                reference.getSourceDivergence(), metadata["sourceDivergence"])
+            self.assertEqual(
+                reference.getSourceAccessions(), metadata["sourceAccessions"])
+
     def testGetBases(self):
         # test searching with no arguments succeeds
         referenceSet = self._gaObject
         for gaReference in referenceSet.getReferences():
-            pysamReference = self._referenceInfos[
-                gaReference.getFastaFilePath()]
+            pysamReference = self._referenceInfos[gaReference.getLocalId()]
             self.assertReferencesEqual(gaReference, pysamReference)
 
     def testGetBasesStart(self):
@@ -92,7 +140,7 @@ class ReferenceSetTest(datadriven.DataDrivenTest):
 
     def testGetBasesRanges(self):
         # test searching with start and end succeeds
-        self.doRangeTest(5, 10)
+        self.doRangeTest(2, 5)
 
     def testGetBasesEmpty(self):
         self.doRangeTest(0, 0)
@@ -114,11 +162,11 @@ class ReferenceSetTest(datadriven.DataDrivenTest):
         referenceSet = self._gaObject
         referenceMd5s = []
         for gaReference in referenceSet.getReferences():
-            # pysamReference = self._referenceInfos[
-            #     gaReference.getFastaFilePath()]
-            # basesChecksum = hashlib.md5(pysamReference.bases).hexdigest()
-            self.assertEqual("TODO", gaReference.getMd5Checksum())
+            pysamReference = self._referenceInfos[gaReference.getLocalId()]
+            basesChecksum = hashlib.md5(pysamReference.bases).hexdigest()
+            self.assertEqual(basesChecksum, gaReference.getMd5Checksum())
             referenceMd5s.append(gaReference.getMd5Checksum())
+        referenceMd5s.sort()
         checksumsString = ''.join(referenceMd5s)
         md5checksum = hashlib.md5(checksumsString).hexdigest()
         referenceSetMd5 = referenceSet.getMd5Checksum()
@@ -127,8 +175,7 @@ class ReferenceSetTest(datadriven.DataDrivenTest):
     def doRangeTest(self, start=None, end=None):
         referenceSet = self._gaObject
         for gaReference in referenceSet.getReferences():
-            pysamReference = self._referenceInfos[
-                gaReference.getFastaFilePath()]
+            pysamReference = self._referenceInfos[gaReference.getLocalId()]
             self.assertReferencesEqual(
                 gaReference, pysamReference, start, end)
 

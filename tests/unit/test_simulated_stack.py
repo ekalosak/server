@@ -9,7 +9,7 @@ from __future__ import unicode_literals
 
 import unittest
 import logging
-
+import random
 import ga4gh.datamodel.reads as reads
 import ga4gh.datamodel.references as references
 import ga4gh.datamodel.variants as variants
@@ -26,7 +26,8 @@ class TestSimulatedStack(unittest.TestCase):
     def setUpClass(cls):
         # silence usually unhelpful CORS log
         logging.getLogger('ga4gh.frontend.cors').setLevel(logging.CRITICAL)
-
+        # Set the random seed to make tests reproducible.
+        random.seed(1)
         config = {
             "DATA_SOURCE": "__SIMULATED__",
             "SIMULATED_BACKEND_RANDOM_SEED": 1111,
@@ -112,6 +113,7 @@ class TestSimulatedStack(unittest.TestCase):
         dataset = variantSet.getParentContainer()
         self.assertEqual(gaVariantSet.id, variantSet.getId())
         self.assertEqual(gaVariantSet.datasetId, dataset.getId())
+        self.assertEqual(gaVariantSet.name, variantSet.getLocalId())
         # TODO verify the metadata and other attributes.
 
     def verifyCallSetsEqual(self, gaCallSet, callSet):
@@ -137,6 +139,7 @@ class TestSimulatedStack(unittest.TestCase):
 
     def verifyDatasetsEqual(self, gaDataset, dataset):
         self.assertEqual(gaDataset.id, dataset.getId())
+        self.assertEqual(gaDataset.name, dataset.getLocalId())
         # TODO fill out the remaining fields and test
 
     def verifyReferenceSetsEqual(self, gaReferenceSet, referenceSet):
@@ -184,6 +187,16 @@ class TestSimulatedStack(unittest.TestCase):
         self.assertEqual(len(objects), len(responseList))
         for gaObject, datamodelObject in zip(responseList, objects):
             objectVerifier(gaObject, datamodelObject)
+
+    def verifySearchResultsEmpty(self, request, path, responseClass):
+        """
+        Verifies that we get a successful response with an empty list of
+        results.
+        """
+        responseData = self.sendSearchRequest(path, request, responseClass)
+        self.assertIsNone(responseData.nextPageToken)
+        responseList = getattr(responseData, responseClass.getValueListName())
+        self.assertEqual(0, len(responseList))
 
     def assertObjectNotFound(self, response):
         """
@@ -264,7 +277,8 @@ class TestSimulatedStack(unittest.TestCase):
                     request = protocol.SearchCallSetsRequest()
                     request.variantSetId = variantSet.getId()
                     request.name = badId
-                    self.verifySearchMethodFails(request, path)
+                    self.verifySearchResultsEmpty(
+                        request, path, protocol.SearchCallSetsResponse)
         # Check for searches within missing variantSets.
         for badId in self.getBadIds():
             request = protocol.SearchCallSetsRequest()
@@ -288,12 +302,13 @@ class TestSimulatedStack(unittest.TestCase):
                 self.verifySearchMethod(
                     request, path, protocol.SearchReadGroupSetsResponse,
                     [readGroupSet], self.verifyReadGroupSetsEqual)
-            # Check if we can search for the callset with a bad name.
+            # Check if we can search for the readGroupSet with a bad name.
             for badId in self.getBadIds():
                 request = protocol.SearchReadGroupSetsRequest()
                 request.datasetId = dataset.getId()
                 request.name = badId
-                self.verifySearchMethodFails(request, path)
+                self.verifySearchResultsEmpty(
+                    request, path, protocol.SearchReadGroupSetsResponse)
         for badId in self.getBadIds():
             request = protocol.SearchReadGroupSetsRequest()
             request.datasetId = badId
@@ -321,6 +336,68 @@ class TestSimulatedStack(unittest.TestCase):
             request.referenceSetId = badId
             self.verifySearchMethodFails(request, path)
 
+    def verifyReferenceSearchFilters(
+            self, objectList, hasAssemblyId, path, requestFactory,
+            responseClass, objectVerifier):
+        """
+        Verifies the filtering functionality for the specified list of
+        reference-like objects.
+        """
+        self.assertGreater(len(objectList), 2)
+        for obj in objectList[1:]:
+            request = requestFactory()
+            # First, check the simple cases; 1 filter set, others null.
+            request.md5checksum = obj.getMd5Checksum()
+            self.verifySearchMethod(
+                request, path, responseClass, [obj], objectVerifier)
+            request.md5checksum = None
+            request.accession = obj.getSourceAccessions()[0]
+            self.verifySearchMethod(
+                request, path, responseClass, [obj], objectVerifier)
+            request.accession = None
+            if hasAssemblyId:
+                request.assemblyId = obj.getAssemblyId()
+                self.verifySearchMethod(
+                    request, path, responseClass, [obj], objectVerifier)
+                request.assemblyId = None
+            # Now check one good value and some bad values.
+            request.md5checksum = obj.getMd5Checksum()
+            badAccessions = [
+                "no such accession", objectList[0].getSourceAccessions()[0]]
+            for accession in badAccessions:
+                request.accession = accession
+                self.verifySearchResultsEmpty(request, path, responseClass)
+            request.accession = None
+            if hasAssemblyId:
+                badAssemblyIds = [
+                    "no such asssembly", objectList[0].getAssemblyId()]
+                for assemblyId in badAssemblyIds:
+                    request.assemblyId = assemblyId
+                    self.verifySearchResultsEmpty(request, path, responseClass)
+                request.assemblyId = None
+
+    def testReferencesSearchFilters(self):
+        path = '/references/search'
+        for referenceSet in self.backend.getReferenceSets():
+
+            def requestFactory():
+                request = protocol.SearchReferencesRequest()
+                request.referenceSetId = referenceSet.getId()
+                return request
+            self.verifyReferenceSearchFilters(
+                referenceSet.getReferences(), False, path, requestFactory,
+                protocol.SearchReferencesResponse, self.verifyReferencesEqual)
+
+    def testReferenceSetsSearchFilters(self):
+        path = '/referencesets/search'
+
+        def requestFactory():
+            return protocol.SearchReferenceSetsRequest()
+        self.verifyReferenceSearchFilters(
+            self.backend.getReferenceSets(), True, path, requestFactory,
+            protocol.SearchReferenceSetsResponse,
+            self.verifyReferenceSetsEqual)
+
     def testGetVariantSet(self):
         path = "/variantsets"
         for dataset in self.backend.getDatasets():
@@ -333,6 +410,29 @@ class TestSimulatedStack(unittest.TestCase):
                 self.verifyGetMethodFails(path, variantSet.getId())
         for badId in self.getBadIds():
             self.verifyGetMethodFails(path, badId)
+
+    def testGetVariant(self):
+        # get a variant from the search method
+        referenceName = '1'
+        start = 0
+        dataset = self.backend.getDatasets()[0]
+        variantSet = dataset.getVariantSets()[0]
+        request = protocol.SearchVariantsRequest()
+        request.variantSetId = variantSet.getId()
+        request.referenceName = referenceName
+        request.start = start
+        request.end = 2**16
+        path = '/variants/search'
+        responseData = self.sendSearchRequest(
+            path, request, protocol.SearchVariantsResponse)
+        variants = responseData.variants[:10]
+
+        # get 'the same' variant using the get method
+        for variant in variants:
+            path = '/variants'
+            responseObject = self.sendGetObject(
+                path, variant.id, protocol.Variant)
+            self.assertEqual(responseObject, variant)
 
     def testGetReferenceSet(self):
         path = "/referencesets"
@@ -497,15 +597,18 @@ class TestSimulatedStack(unittest.TestCase):
         path = '/reads/search'
         for dataset in self.backend.getDatasets():
             for readGroupSet in dataset.getReadGroupSets():
-                for readGroup in readGroupSet.getReadGroups():
-                    # search reads
-                    request = protocol.SearchReadsRequest()
-                    request.readGroupIds = [readGroup.getId()]
-                    request.referenceId = "chr1"
-                    responseData = self.sendSearchRequest(
-                        path, request, protocol.SearchReadsResponse)
-                    alignments = responseData.alignments
-                    self.assertGreater(len(alignments), 0)
-                    for alignment in alignments:
-                        self.assertEqual(
-                            alignment.readGroupId, readGroup.getId())
+                referenceSet = readGroupSet.getReferenceSet()
+                for reference in referenceSet.getReferences():
+                    for readGroup in readGroupSet.getReadGroups():
+                        # search reads
+                        request = protocol.SearchReadsRequest()
+                        request.readGroupIds = [readGroup.getId()]
+                        request.referenceId = reference.getId()
+                        responseData = self.sendSearchRequest(
+                            path, request, protocol.SearchReadsResponse)
+                        alignments = responseData.alignments
+                        self.assertGreater(len(alignments), 0)
+                        for alignment in alignments:
+                            # TODO more tests here: this is very weak.
+                            self.assertEqual(
+                                alignment.readGroupId, readGroup.getId())

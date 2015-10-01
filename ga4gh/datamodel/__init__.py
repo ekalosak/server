@@ -258,6 +258,14 @@ class ReadGroupCompoundId(ReadGroupSetCompoundId):
     containerIds = ReadGroupSetCompoundId.containerIds + [('readGroupId', 2)]
 
 
+class ExperimentCompoundId(ReadGroupCompoundId):
+    """
+    The compound id for an experiment
+    """
+    fields = ReadGroupCompoundId.fields + ['experiment']
+    containerIds = ReadGroupCompoundId.containerIds + [('experimentId', 3)]
+
+
 class ReadAlignmentCompoundId(ReadGroupCompoundId):
     """
     The compound id for a read alignment
@@ -353,10 +361,7 @@ class PysamDatamodelMixin(object):
         return contig, start, stop
 
     @classmethod
-    def sanitizeAlignmentFileFetch(
-            cls, referenceName=None, start=None, end=None):
-        if referenceName is not None:
-            referenceName = cls.sanitizeString(referenceName, 'referenceName')
+    def sanitizeAlignmentFileFetch(cls, start=None, end=None):
         if start is not None:
             start = cls.sanitizeInt(
                 start, cls.samMin, cls.samMaxStart, 'start')
@@ -364,13 +369,7 @@ class PysamDatamodelMixin(object):
             end = cls.sanitizeInt(end, cls.samMin, cls.samMaxEnd, 'end')
         if start is not None and end is not None:
             cls.assertValidRange(start, end, 'start', 'end')
-        return referenceName, start, end
-
-    @classmethod
-    def sanitizeGetRName(cls, referenceId):
-        cls.assertInt(referenceId, 'referenceId')
-        cls.assertInRange(
-            referenceId, cls.rNameMin, cls.rNameMax, 'referenceId')
+        return start, end
 
     @classmethod
     def assertValidRange(cls, start, end, startName, endName):
